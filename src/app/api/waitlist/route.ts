@@ -1,8 +1,77 @@
+import { randomUUID } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
+type WaitlistRecord = {
+  id: string;
+  email: string;
+  name?: string;
+  status: 'subscribed';
+  source: 'website_waitlist';
+  marketingConsent: {
+    granted: true;
+    capturedAt: string;
+    textVersion: 'opening-updates-2026-10';
+  };
+  createdAt: string;
+  updatedAt: string;
+  submissions: number;
+};
+
 const json = (body: Record<string, string>, status: number) => NextResponse.json(body, { status });
+const filePath = join(process.cwd(), 'data', 'waitlist.json');
+let writeQueue: Promise<void> = Promise.resolve();
+
+async function saveSignup(email: string, name: string | undefined, submittedAt: string) {
+  const operation = writeQueue.then(async () => {
+    const directory = join(process.cwd(), 'data');
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await chmod(directory, 0o700);
+
+    let records: WaitlistRecord[] = [];
+    try {
+      const saved = await readFile(filePath, 'utf8');
+      const parsed: unknown = JSON.parse(saved);
+      if (!Array.isArray(parsed)) throw new Error('Waitlist file must contain a JSON array.');
+      records = parsed as WaitlistRecord[];
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    }
+
+    const existing = records.find(record => record.email === email);
+    if (existing) {
+      existing.updatedAt = submittedAt;
+      existing.submissions = (existing.submissions || 1) + 1;
+      if (!existing.name && name) existing.name = name;
+    } else {
+      records.push({
+        id: randomUUID(),
+        email,
+        ...(name ? { name } : {}),
+        status: 'subscribed',
+        source: 'website_waitlist',
+        marketingConsent: {
+          granted: true,
+          capturedAt: submittedAt,
+          textVersion: 'opening-updates-2026-10',
+        },
+        createdAt: submittedAt,
+        updatedAt: submittedAt,
+        submissions: 1,
+      });
+    }
+
+    const tempPath = `${filePath}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(records, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await rename(tempPath, filePath);
+  });
+
+  writeQueue = operation.then(() => undefined, () => undefined);
+  await operation;
+}
 
 export async function POST(request: Request) {
   const origin = request.headers.get('origin');
@@ -35,45 +104,12 @@ export async function POST(request: Request) {
     return json({ error: 'Please keep your name under 80 characters.' }, 400);
   }
 
-  const apiKey = process.env.RESEND_API_KEY;
-  const segmentId = process.env.RESEND_WAITLIST_SEGMENT_ID;
-  if (!apiKey || !segmentId) {
-    return json({ error: 'Our launch list is nearly ready. Please come back shortly to save your place.' }, 503);
-  }
-
   const normalizedEmail = email.trim().toLowerCase();
   const fullName = typeof name === 'string' ? name.trim() : '';
-  const [firstName, ...lastName] = fullName.split(/\s+/).filter(Boolean);
-  const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
-
   try {
-    const contactResponse = await fetch('https://api.resend.com/contacts', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        email: normalizedEmail,
-        ...(firstName ? { first_name: firstName } : {}),
-        ...(lastName.length ? { last_name: lastName.join(' ') } : {}),
-        unsubscribed: false,
-      }),
-      signal: AbortSignal.timeout(8000),
-      cache: 'no-store',
-    });
-
-    if (!contactResponse.ok && contactResponse.status !== 409) {
-      return json({ error: 'We couldn’t add you just now. Please try again shortly.' }, 502);
-    }
-
-    const segmentResponse = await fetch(
-      `https://api.resend.com/contacts/${encodeURIComponent(normalizedEmail)}/segments/${encodeURIComponent(segmentId)}`,
-      { method: 'POST', headers, signal: AbortSignal.timeout(8000), cache: 'no-store' },
-    );
-    if (!segmentResponse.ok && segmentResponse.status !== 409) {
-      return json({ error: 'We couldn’t finish saving your place. Please try again shortly.' }, 502);
-    }
-
+    await saveSignup(normalizedEmail, fullName || undefined, new Date().toISOString());
     return json({ message: 'You’re on the list.' }, 200);
   } catch {
-    return json({ error: 'We couldn’t reach our launch list. Please try again shortly.' }, 502);
+    return json({ error: 'We couldn’t save your place just now. Please try again shortly.' }, 500);
   }
 }

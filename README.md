@@ -29,7 +29,7 @@ Production builds use Webpack because Turbopack's CSS worker port is restricted 
 
 ## Launch waitlist
 
-The signup dialog collects an optional name, email address, and explicit consent to receive opening updates. `POST /api/waitlist` adds opted-in contacts to a dedicated Resend segment. To enable it, create an API key and a segment such as “Marlin Opening Updates,” then set `RESEND_API_KEY` and `RESEND_WAITLIST_SEGMENT_ID` in `.env.local` using `.env.example` as a template. Without both values, the form returns a clear temporary-unavailable message. Send the launch announcement to the segment from Resend when opening plans are ready; joining the list does not book a stay.
+The signup dialog collects an optional name, email address, and explicit consent to receive opening updates. `POST /api/waitlist` stores each opted-in signup in `data/waitlist.json`, including consent time, consent-copy version, signup source, and timestamps. Repeat signups update the existing record rather than adding duplicates. The data file is excluded from Git so guest email addresses are not committed. This endpoint requires a Node.js server with persistent writable storage; GitHub Pages is static hosting and cannot run it or retain signups. Back up `data/waitlist.json` securely before using it as a marketing list. Joining the list does not book a stay.
 
 ## Checks
 
